@@ -1,0 +1,730 @@
+ldinvgamma=function (x, shape, scale = 1) 
+{
+  if (shape <= 0 | scale <= 0) {
+    stop("Shape or scale parameter negative in dinvgamma().\n")
+  }
+  alpha <- shape
+  beta <- scale
+  log.density <- alpha * log(beta) - lgamma(alpha) - (alpha + 
+                                                        1) * log(x) - (beta/x)
+  return(log.density)
+}
+
+# Log-Normal posterior with prior pi(sigma) \propto 1/sigma: (parametrizado en log(\sigma)):
+log.post.lnormal.nc=function (parms, Data,b,prior=1,XtX.inv=NULL,nunc=NULL){
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-1])/exp(parms[1])
+  log.f= -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  return(sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+log.post.lnormal=cmpfun(log.post.lnormal.nc)
+
+
+##Funcion que calcula los m1 dado un set de covariables, sin haber integrado los parametros no comunes, usamos la posteriori sobre todos los parametros:
+##Approximacion marginal 1 under an alternative model:
+#Usando esta misma funcion aprox. la marginal para inv-gamma y para g=1
+
+marg1.allpara.gfixed=function(y,rel,cens,X,k.star,nsim.marg=1000,nsim.post=5000){
+  ncov=ncol(X)
+  data1.aux=as.matrix(cbind(y,rel,1,X))
+  colnames(data1.aux)=c("y","rel","Intercp",colnames(X))
+  tt=survreg(Surv(exp(y),rel)~data1.aux[,-c(1:3)],dist="lognormal")
+  parms.hat1=c(log(tt$scale),tt$coeff)
+  
+  tt1=optim(par=parms.hat1,fn=log.post.lnormal,control=list(fnscale=-1),Data=data1.aux,method=optimmethod,hessian=TRUE)
+  var.prop=-solve(tt1$hessian)
+  
+  parms.hat1=tt1$par
+  
+  proposal=list(var=var.prop,scale=1)
+  #Para g fixed, g=1
+  res.1=simul.post.rw.gfixed(log.post.lnormal.our.gfixed,proposal,start=parms.hat1,g=1,m=nsimul,Data=as.matrix(data1.aux),cens=cens)
+  res.1$par=res.1$par[-(1:(nsimul*0.3)),]
+  
+  mu.prop=apply(res.1$par,2,mean)
+  Sigma.prop=cov(res.1$par)
+  
+  #Usando g=1
+  thetas=rmvt(nsim.marg, delta = mu.prop, sigma =Sigma.prop,df=3)
+  lnum=apply(as.matrix(1:nsim.marg,ncol=nsim.marg),1,function(x) log.post.lnormal.our.gfixed(thetas[x,],g=1,Data=as.matrix(data1.aux),cens=cens))
+  lnum=lnum+k.star 
+  lden=apply(as.matrix(1:nsim.marg,ncol=nsim.marg),1,function(x){ dmvt(thetas[x,],delta=mu.prop, sigma =Sigma.prop,df=3,log=TRUE)})
+  
+  marg1.comp=mean(exp(lnum-lden),na.rm=TRUE)
+  return(list(marg=marg1.comp,par.post=res.1$par))
+}
+
+marg1.allpara.igamma=function(y,rel,cens,X,k.star,nsim.marg=1000,nsim.post=5000){
+  ncov=ncol(X)
+  data1.aux=as.matrix(cbind(y,rel,1,X))
+  colnames(data1.aux)=c("y","rel","Intercp",colnames(X))
+  tt=survreg(Surv(exp(y),rel)~data1.aux[,-c(1:3)],dist="lognormal")
+  parms.hat1=c(log(tt$scale),tt$coeff)
+  
+  tt1=optim(par=parms.hat1,fn=log.post.lnormal,control=list(fnscale=-1),Data=data1.aux,method=optimmethod,hessian=TRUE)
+  var.prop=-solve(tt1$hessian)
+  
+  parms.hat1=tt1$par
+  
+  proposal=list(var=var.prop,scale=0.5)
+ 
+   #Para la inverse-gamma:
+  res.1=simul.post.rw(log.post.lnormal.our,proposal,start=parms.hat1,g.start=1,nsimul,Data=as.matrix(data1.aux),cens=cens)
+  
+  res.1$par=res.1$par[-(1:(nsimul*0.3)),]
+  
+  n.par=dim(res.1$par)[2]
+  mu.prop=apply(res.1$par[,-n.par],2,mean)
+  Sigma.prop=cov(res.1$par[,-n.par])
+  
+  #Usando g sim Inv-gamma(0.5,0.5)
+  thetas=rmvt(nsim.marg, delta = mu.prop, sigma =Sigma.prop,df=3)
+  gs=rinvgamma(nsim.marg,0.5,0.5)
+  
+  
+  lnum=apply(as.matrix(1:nsim.marg,ncol=nsim.marg),1,function(x) log.post.lnormal.our(thetas[x,],g=gs[x],Data=as.matrix(data1.aux),cens=cens))
+  lnum=lnum+k.star 
+  lden=apply(as.matrix(1:nsim.marg,ncol=nsim.marg),1,function(x){ dmvt(thetas[x,],delta=mu.prop, sigma =Sigma.prop,df=3,log=TRUE) + ldinvgamma(gs[x],0.5,0.5)})
+  
+  
+  marg1.comp=mean(exp(lnum-lden),na.rm=TRUE)
+  return(list(marg=marg1.comp,par.post=res.1$par))
+}
+
+#Using g fixed, g=1.
+#Considering the new var-covar matrix, taken into account the "quasi orthogonalization". 06/04/2017
+log.prior.our.gfixed=function(parms,g=1,cens,X){
+  np=length(parms)
+  res=0
+  n=length(cens)
+  zi0=(cens-parms[2])/exp(parms[1])
+  pzi0=pnorm(zi0)
+  Delta0=diag(pzi0,nrow=n)
+  hzi0=exp(dnorm(zi0,log=TRUE)-pnorm(zi0,lower.tail=FALSE,log.p=TRUE))
+  wi=pzi0+dnorm(zi0)*(hzi0-zi0)
+  ne=sum(wi)
+  W=diag(wi)
+  Uno=matrix(1,nrow=n,ncol=1)
+  Id=diag(1,n)
+  ne.inv=Uno%*%t(Uno)/ne
+  W.root=diag(sqrt(wi))
+  Weig=W.root%*%(Id-W.root%*%ne.inv%*%W.root)%*%W.root
+  Xt.Weig.X=t(X)%*%Weig%*%X
+  
+  if(det(Xt.Weig.X)<1e-10 || is.na(det(Xt.Weig.X))){
+    X.sca=t(X)%*%(Id-Uno%*%t(Uno)/n)%*%X
+    Xt.Weig.X.inv=n*solve(X.sca)
+  }else{
+    Xt.Weig.X.inv=ne*solve(Xt.Weig.X)
+  }
+  g=1
+  
+  if(np>2) res=dmnorm(x=parms[-c(1,2)],mean=0,
+                      varcov=exp(2*parms[1])*Xt.Weig.X.inv,log=TRUE)
+  return(res)
+}
+
+
+#Vamos a definir la log posterior a integrar, para aproximarla después por importance sampling, sin integrar los beta.gamma:
+#Using as prior over g \sim Inv-Gamma(0.5,0.5)
+#Usamos la prior sobre los parametros no comunes que habiamos definido antes, sin usar W * X
+log.prior.our=function(parms,g,cens,X){
+  np=length(parms)
+  res=0
+  n=length(cens)
+  zi0=(cens-parms[2])/exp(parms[1])
+  pzi0=pnorm(zi0)
+  Delta0=diag(pzi0,nrow=n)
+  hzi0=exp(dnorm(zi0,log=TRUE)-pnorm(zi0,lower.tail=FALSE,log.p=TRUE))
+  wi=pzi0+dnorm(zi0)*(hzi0-zi0)
+  ne=sum(wi)
+  W=diag(wi,nrow=n)
+  Uno=matrix(1,nrow=n,ncol=1)
+  Id=diag(1,n)
+  ne.inv=Uno%*%t(Uno)/ne
+  W.root=diag(sqrt(wi),nrow=n)
+  Weig=W.root%*%(Id-W.root%*%ne.inv%*%W.root)%*%W.root
+  Xt.Weig.X=t(X)%*%Weig%*%X
+  
+  if(det(Xt.Weig.X)<1e-10 || is.na(det(Xt.Weig.X))){
+    X.sca=t(X)%*%(Id-Uno%*%t(Uno)/n)%*%X
+    Xt.Weig.X.inv=n*solve(X.sca)
+  }else{
+    Xt.Weig.X.inv=ne*solve(Xt.Weig.X)
+  }
+
+  #PAra la inverse gamma:
+  if(np>2) res=dmnorm(x=parms[-c(1,2)],mean=0,
+                      varcov=exp(2*parms[1])*g*Xt.Weig.X.inv,log=TRUE)+ldinvgamma(g,0.5,0.5)
+  #Para g=1
+  #if(np>2) res=dmnorm(x=parms[-c(1,2)],mean=0,
+  #                    varcov=exp(2*parms[1])*1*Xt.Weig.X.inv,log=TRUE)
+  return(res)
+}
+
+
+# Log-Normal with Conventional Prior, with g sim IGa(0.5,0.5)
+log.post.lnormal.our=function (parms,g, Data,cens){
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-1])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(log.prior.our(parms,g,cens,X=as.matrix(Data[,-(1:3)]))+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+# Log-Normal with Conventional Prior, with g sim IGa(0.5,0.5), escrita en forma vectorial para todos los parametros:
+log.post.lnormal.our.vec=function (parms, Data,cens){
+  p=length(parms)
+  #en p estan incluidos beta0, sigma y g:
+  z = (Data[,1] - cbind(Data[,-c(1:2)]) %*% parms[-c(1,p)])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(log.prior.our(parms[-p],parms[p],cens,X=as.matrix(Data[,-(1:3)]))+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+#Misma posteriori usando la prior robusta para pi(g):
+# Log-Normal with Conventional Prior, with g sim Pi(g) robust prior 
+log.post.lnormal.robust=function (parms,g, Data,cens){
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-1])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(log.prior.robust(parms,g,cens,X=as.matrix(Data[,-(1:3)]))+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+#Using as prior over g \sim pi(g) robust prior:
+#Usamos la prior sobre los parametros no comunes que habiamos definido antes, sin usar W * X
+log.prior.robust=function(parms,g,cens,X){
+  np=length(parms)
+  n=length(cens)
+  res=0
+  zi0=(cens-parms[2])/exp(parms[1])
+  pzi0=pnorm(zi0)
+  Delta0=diag(pzi0,nrow=n)
+  hzi0=exp(dnorm(zi0,log=TRUE)-pnorm(zi0,lower.tail=FALSE,log.p=TRUE))
+  wi=pzi0+dnorm(zi0)*(hzi0-zi0)
+  ne=sum(wi)
+  W=diag(wi,nrow=n)
+  Uno=matrix(1,nrow=n,ncol=1)
+  Id=diag(1,n)
+  ne.inv=Uno%*%t(Uno)/ne
+  W.root=diag(sqrt(wi),nrow=n)
+  Weig=W.root%*%(Id-W.root%*%ne.inv%*%W.root)%*%W.root
+  Xt.Weig.X=t(X)%*%Weig%*%X
+  
+  if(det(Xt.Weig.X)<1e-10 || is.na(det(Xt.Weig.X))){
+    X.sca=t(X)%*%(Id-Uno%*%t(Uno)/n)%*%X
+    Xt.Weig.X.inv=n*solve(X.sca)
+  }else{
+    Xt.Weig.X.inv=ne*solve(Xt.Weig.X)
+  }
+  
+  if(np>2) res=dmnorm(x=parms[-c(1,2)],mean=0,
+                      varcov=exp(2*parms[1])*g*Xt.Weig.X.inv,log=TRUE)+lpi.g(g,n,k.gamma=np-2)
+  return(res)
+}
+
+
+
+log.post.lnormal.our.gfixed=function (parms,g=1, Data,cens){
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-1])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(log.prior.our.gfixed(parms,g=1,cens,X=as.matrix(Data[,-(1:3)]))+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+
+log.post.lnormal.0.our=function (parms, Data){
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-1])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+
+##Funcion que calcula los m1 dado un set de covariables, sin haber integrado los parametros no comunes, usamos la posteriori sobre todos los parametros:
+##Approximacion marginal 1 under an alternative model:
+#Prior para g: Robust prior.
+marg1.allpara.robust=function(y,rel,ct,X,k.star,nsim.marg=1000,nsim.post=10000){
+  ncov=ncol(X)
+  data1.aux=as.matrix(cbind(y,rel,1,X))
+  n=length(y)
+  #data1.aux[,-(1:3)]=scale(data1.aux[,-(1:3)])
+  colnames(data1.aux)=c("y","rel","Intercp",colnames(X))
+  tt=survreg(Surv(exp(y),rel)~data1.aux[,-c(1:3)],dist="lognormal")
+  parms.hat1=c(log(tt$scale),tt$coeff)
+  
+  tt1=optim(par=parms.hat1,fn=log.post.lnormal,control=list(fnscale=-1),Data=data1.aux,method=optimmethod,hessian=TRUE)
+  #p=dim(tt$var)[1]
+  #var.prop=matrix(NA,nrow=p,ncol=p)
+  #var.prop[1,]=tt$var[p,]
+  #var.prop[,1]=tt$var[,p]
+  #var.prop[2:p,2:p]=tt$var[1:(p-1),1:(p-1)]
+  
+  parms.hat1=tt1$par
+  var.prop=-solve(tt1$hessian)
+  
+  proposal=list(var=var.prop,scale=0.5)
+  res=simul.post.robust.rw(log.post.lnormal.robust,proposal,start=parms.hat1,g.start=1,nsim.post,n=n,Data=data1.aux,cens=ct)
+  res$par=res$par[-(1:(nsim.post*0.3)),]
+  
+  n.par=dim(res$par)[2]
+  mu.prop=apply(res$par[,-n.par],2,mean)
+  Sigma.prop=cov(res$par[,-n.par])
+  
+  #Usando g sim Robust prior
+  thetas=rmvt(nsim.marg, delta = mu.prop, sigma =Sigma.prop,df=4)
+  gs=r.robust.g(nsim.marg,n,k.gamma=ncov)
+  
+  cens=ct
+  
+  lnum=apply(as.matrix(1:nsim.marg,ncol=nsim.marg),1,function(x) log.post.lnormal.robust(thetas[x,],g=gs[x],Data=as.matrix(data1.aux),cens=cens))
+  lnum=lnum+k.star 
+  lden=apply(as.matrix(1:nsim.marg,ncol=nsim.marg),1,function(x){ dmvt(thetas[x,],delta=mu.prop, sigma =Sigma.prop,df=3,log=TRUE) + lpi.g(gs[x],n,k.gamma=ncov)})
+
+  marg1.comp=mean(exp(lnum-lden),na.rm=TRUE)
+  return(list(marg=marg1.comp,par.post=res$par))
+}
+
+
+
+
+
+calc.ne=function(parms,censtimes){
+  zi0=(censtimes-parms[2])/exp(parms[1])
+  pzi0=pnorm(zi0)
+  hzi0=exp(dnorm(zi0,log=TRUE)-pnorm(zi0,lower.tail=FALSE,log.p=TRUE))
+  wi=pzi0+dnorm(zi0)*(hzi0-zi0)
+  return(sum(wi))
+}
+
+calc.ne.alternative=function(parms,censtimes,X){
+  zi0=(censtimes-X%*%parms[-1])/exp(parms[1])
+  pzi0=pnorm(zi0)
+  hzi0=exp(dnorm(zi0,log=TRUE)-pnorm(zi0,lower.tail=FALSE,log.p=TRUE))
+  wi=pzi0+dnorm(zi0)*(hzi0-zi0)
+  return(sum(wi))
+}
+
+
+#Vamos a implementar un simulador de la posteriori, que simule a la vez de g de una invgamma y un random walk Metropolis para los parametros theta de la regresion:
+simul.post.rw=function(logpost,proposal,start,g.start,m,...){
+  pb = length(start)
+  Mpar = array(0, c(m, pb+1))
+  b = matrix(t(start))
+  g=g.start
+  lb = logpost(start,g.start, ...)
+  lg=ldinvgamma(g.start,0.5,0.5)
+  a = chol(proposal$var)
+  scale = proposal$scale
+  accept = 0
+  for (i in 1:m) {
+    bc = b + scale * t(a) %*% array(rnorm(pb), c(pb, 1))
+    gc=rinvgamma(1,0.5,0.5)
+    lbc = logpost(t(bc),gc, ...)
+    lgc=ldinvgamma(gc,0.5,0.5)
+    #En este caso en la probabilidad de salto hay que tener en cuenta la proposal dgamma para g:
+    prob = exp(lbc - lb+lg-lgc)
+    if (is.na(prob) == FALSE) {
+      if (runif(1) < prob) {
+        lb = lbc
+        b = bc
+        g=gc
+        lg=lgc
+        accept = accept + 1
+      }
+    }
+    Mpar[i, ] = c(b,g)
+  }
+  accept = accept/m
+  stuff = list(par = Mpar, accept = accept)
+  return(stuff)
+  
+}
+
+#Vamos a implementar un simulador de la posteriori, que simule a la vez de g de una invgamma y un random walk Metropolis para los parametros theta de la regresion:
+simul.post.rw.gfixed=function(logpost,proposal,start,g,m,...){
+  pb = length(start)
+  Mpar = array(0, c(m, pb))
+  b = matrix(t(start))
+  lb = logpost(start,g, ...)
+  a = chol(proposal$var)
+  scale = proposal$scale
+  accept = 0
+  for (i in 1:m) {
+    bc = b + scale * t(a) %*% array(rnorm(pb), c(pb, 1))
+    lbc = logpost(t(bc),g, ...)
+    prob = exp(lbc - lb)
+    if (is.na(prob) == FALSE) {
+      if (runif(1) < prob) {
+        lb = lbc
+        b = bc
+        accept = accept + 1
+      }
+    }
+    Mpar[i, ] = c(b)
+  }
+  accept = accept/m
+  stuff = list(par = Mpar, accept = accept)
+  return(stuff)
+  
+}
+
+
+
+#Vamos a implementar un simulador de la posteriori, que simule a la vez de g de una invgamma y un random walk Metropolis para los parametros theta de la regresion:
+simul.post.robust.rw=function(logpost,proposal,start,g.start,m,n,...){
+  pb = length(start)
+  Mpar = array(0, c(m, pb+1))
+  b = matrix(t(start))
+  g=g.start
+  k.gamma=pb-2
+  lb = logpost(start,g.start, ...)
+  lg=lpi.g(g.start,n,k.gamma)
+  a = chol(proposal$var)
+  scale = proposal$scale
+  accept = 0
+  for (i in 1:m) {
+    bc = b + scale * t(a) %*% array(rnorm(pb), c(pb, 1))
+    gc=r.robust.g(1,n,k.gamma)
+    lbc = logpost(t(bc),gc, ...)
+    lgc=lpi.g(gc,n,k.gamma)
+    #En este caso en la probabilidad de salto hay que tener en cuenta la proposal dgamma para g:
+    prob = exp(lbc - lb+lg-lgc)
+    if (is.na(prob) == FALSE) {
+      if (runif(1) < prob) {
+        lb = lbc
+        b = bc
+        g=gc
+        lg=lgc
+        accept = accept + 1
+      }
+    }
+    Mpar[i, ] = c(b,g)
+  }
+  accept = accept/m
+  stuff = list(par = Mpar, accept = accept)
+  return(stuff)
+  
+}
+
+#Simulation of g using Inverse Transform of Distribution:
+#Simulacion por el metodo funcion distribucion inversa de pi(g):
+r.robust.g=function(nsimul,n,k.gamma){
+  unif=runif(nsimul,0,1)
+  g.simul=(1+n)/(n*(k.gamma+1))*(1-unif)^(-2)-1/n
+  return(g.simul)
+}
+
+#Density robust prior:
+pi.g=function(g,n,k.gamma){
+  if(g> (1+n)/(n*(k.gamma+1))-1/n) val.pi=0.5*sqrt((1+n)/((k.gamma+1)*n))*(g+1/n)^(-3/2)
+  else val.pi=0
+  return(val.pi)
+}
+
+#Logdensity robust prior:
+lpi.g=function(g,n,k.gamma){
+  if(g> (1+n)/(n*(k.gamma+1))-1/n) val.lpi=log(0.5)+0.5*(log(1+n)-log(k.gamma+1)-log(n))-3/2*log(g+1/n)
+  else val.lpi=-Inf
+  return(val.lpi)
+}
+
+
+#Calculo probabilidades a posteriori a partir de la prior sobre modelos uniforme o la Scott-Berger, a partir de los BFs:
+prob.post=function(BF,mod.list,scott=TRUE){
+  nmodels=length(mod.list)
+  prob.post=rep(NA,nmodels+1)
+  BF=c(1,BF)
+  if(scott==FALSE){
+    for(i in 1:(nmodels+1)){
+      prob.post[i]=(1+sum(BF[-i]/BF[i]))^(-1)
+    }
+  }else{
+    ncov=c(0,laply(mod.list,length))
+    uncov=unique(ncov)
+    p=max(ncov)
+    redprior=1/(p+1)
+    redprior=redprior/c(table(ncov))
+    modprior=redprior[ncov+1]
+    for(i in 1:(nmodels+1)){
+      prob.post[i]=(1+sum(modprior[-i]*BF[-i]/(modprior[i]*BF[i])))^(-1)
+    }
+  }
+  return(prob.post)
+}
+
+################################################
+##Funciones para usar la g-prior con XtX:
+marg1.allpara.gprior.XtX=function(y,rel,cens,X,k.star,nsim.marg=1000,nsim.post=5000){
+  ncov=ncol(X)
+  data1.aux=as.matrix(cbind(y,rel,1,X))
+  colnames(data1.aux)=c("y","rel","Intercp",colnames(X))
+  tt=survreg(Surv(exp(y),rel)~data1.aux[,-c(1:3)],dist="lognormal")
+  parms.hat1=c(log(tt$scale),tt$coeff)
+  
+  tt1=optim(par=parms.hat1,fn=log.post.lnormal,control=list(fnscale=-1),Data=data1.aux,method=optimmethod,hessian=TRUE)
+  var.prop=-solve(tt1$hessian)
+  
+  parms.hat1=tt1$par
+  
+  proposal=list(var=var.prop,scale=1)
+  #Para g fixed, g=1
+  res.1=simul.post.rw.gfixed(log.post.lnormal.XtX,proposal,start=parms.hat1,g=1,m=nsimul,Data=as.matrix(data1.aux),cens=cens)
+  res.1$par=res.1$par[-(1:(nsimul*0.3)),]
+  
+  mu.prop=apply(res.1$par,2,mean)
+  Sigma.prop=cov(res.1$par)
+  
+  #Usando g=1
+  thetas=rmvt(nsim.marg, delta = mu.prop, sigma =Sigma.prop,df=3)
+  lnum=apply(as.matrix(1:nsim.marg,ncol=nsim.marg),1,function(x) log.post.lnormal.XtX(thetas[x,],g=1,Data=as.matrix(data1.aux),cens=cens))
+  lnum=lnum+k.star 
+  lden=apply(as.matrix(1:nsim.marg,ncol=nsim.marg),1,function(x){ dmvt(thetas[x,],delta=mu.prop, sigma =Sigma.prop,df=3,log=TRUE)})
+  
+  marg1.comp=mean(exp(lnum-lden),na.rm=TRUE)
+  return(list(marg=marg1.comp,par.post=res.1$par))
+}
+
+
+# Log-Normal with Conventional Prior, and matrix XtX (toda):
+log.post.lnormal.XtX=function (parms,g, Data,cens){
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-1])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(log.prior.XtX(parms,g,cens,X=as.matrix(Data[,-(1:3)]))+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+
+# Log-prior with var-matrix XtX:
+log.prior.XtX=function(parms,g=1,cens,X){
+  np=length(parms)
+  n=length(cens)
+  XtX=t(X)%*%X
+  XtX.inv=n*solve(XtX)
+  g=1
+  
+  if(np>2) res=dmnorm(x=parms[-c(1,2)],mean=0,
+                      varcov=exp(2*parms[1])*g*XtX.inv,log=TRUE)
+  return(res)
+}
+
+
+########################################
+#Aprox con Laplace:
+##Funcion que calcula los m1 dado un set de covariables, sin haber integrado los parametros no comunes, usamos la posteriori sobre todos los parametros:
+##Approximacion marginal 1 under an alternative model:
+#Prior para g: Robust prior.
+
+#Log-Normal with Conventional Prior, with g sim Pi(g) robust prior; con Sigma^M fijada con beta0 y sigma fijados:
+log.post.lnormal.robust.sigmaMfixed=function (g,parms,Data,cens,SigmaM){
+  p=length(parms)
+  #en p estan incluidos beta0, sigma y g:
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-c(1)])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  V=g*SigmaM
+  return(dmnorm(x=parms[-c(1,2)],mean=0,
+                varcov=V,log=TRUE)+lpi.g(g,n,k.gamma=p-2)+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+post.lnormal.robust.sigmaMfixed.tointe.aux=function(g,parms,Data,cens,SigmaM,k.star=NULL){exp(log.post.lnormal.robust.sigmaMfixed(g=g,parms=parms,Data=Data,cens=cens,SigmaM=SigmaM)+k.star)}
+post.lnormal.robust.sigmaMfixed.tointe=function(g,parms,Data,cens,SigmaM,k.star=NULL){ mapply(post.lnormal.robust.sigmaMfixed.tointe.aux,g,MoreArgs=list(parms=parms,Data=Data,cens=cens,SigmaM=SigmaM,k.star=k.star))}
+
+#Log Posterior distribution for Log-Normal with Conventional Prior, where we integrate g with respecto to the g-prior
+log.post.lnormal.robust.sigmaMfixed.g.inte=function(parms,Data,cens,SigmaM,k.star=NULL){
+  n=length(cens)
+  k.gamma=length(parms)-2
+  tmp=integrate(post.lnormal.robust.sigmaMfixed.tointe,lower=(1+n)/(n*(k.gamma+1))-1/n,upper=Inf,parms=parms,Data=Data,cens=cens,SigmaM=SigmaM,k.star)
+  return(log(tmp$value))
+}
+
+#Log-Normal with Inverse-Gamma Prior, with g sim InverseGamma(g); con Sigma^M fijada con beta0 y sigma fijados, y donde parms y g entran separados
+log.post.lnormal.igamma.sigmaMfixed=function (parms,g,Data,cens,SigmaM){
+  p=length(parms)
+  #en p estan incluidos beta0, sigma y g:
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-c(1)])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(dmnorm(x=parms[-c(1,2)],mean=0,
+                varcov=g*SigmaM,log=TRUE)+ldinvgamma(g,0.5,0.5)+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+#Log-Normal with Inverse-Gamma Prior, with g sim InverseGamma(g); con Sigma^M fijada con beta0 y sigma fijados, y donde todos los parametros, parms y g pasan juntos en un vector:
+log.post.lnormal.igamma.sigmaMfixed.vec=function (parms,Data,cens,SigmaM){
+  p=length(parms)
+  #en p estan incluidos beta0, sigma y g:
+  z = (Data[,1] - cbind(Data[,-c(1:2)]) %*% parms[-c(1,p)])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(dmnorm(x=parms[-c(1,2,p)],mean=0,
+                varcov=parms[p]*SigmaM,log=TRUE)+ldinvgamma(parms[p],0.5,0.5)+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+############################################################
+#Con g fixed to 1:
+log.post.lnormal.gfixed.sigmaMfixed=function (parms,g=1, Data,cens,SigmaM){
+  z = (Data[,1] - cbind(Data[,-(1:2)]) %*% parms[-1])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(dmnorm(x=parms[-c(1,2)],mean=0,
+                varcov=SigmaM,log=TRUE)+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+############################################################
+#Con g fixed to 1: y todos los parametros entran en parms (sin g)
+log.post.lnormal.gfixed.sigmaMfixed.vec=function (parms,Data,cens,SigmaM){
+  #p=length(parms)
+  #en p estan incluidos beta0, sigma y g:
+  z = (Data[,1] - cbind(Data[,-c(1:2)]) %*% parms[-1])/exp(parms[1])
+  log.f = -parms[1]-0.5*z^2
+  log.S=pnorm(z,lower.tail=FALSE,log.p=TRUE)
+  #Al definir X para llamar a log.prior.our quitamos las 3 primeras columnas: y, rel e intercepta:
+  return(dmnorm(x=parms[-c(1,2)],mean=0,
+                varcov=SigmaM,log=TRUE)+sum(Data[,2] * log.f + (1 - Data[,2]) * log.S))
+}
+
+calculo.SigmaM=function(parms,cens,X){
+  n=length(cens)
+  res=0
+  zi0=(cens-parms[2])/exp(parms[1])
+  pzi0=pnorm(zi0)
+  Delta0=diag(pzi0,nrow=n)
+  hzi0=exp(dnorm(zi0,log=TRUE)-pnorm(zi0,lower.tail=FALSE,log.p=TRUE))
+  wi=pzi0+dnorm(zi0)*(hzi0-zi0)
+  ne=sum(wi)
+  W=diag(wi,nrow=n)
+  Uno=matrix(1,nrow=n,ncol=1)
+  Id=diag(1,n)
+  ne.inv=Uno%*%t(Uno)/ne
+  W.root=diag(sqrt(wi),nrow=n)
+  Weig=W.root%*%(Id-W.root%*%ne.inv%*%W.root)%*%W.root
+  Xt.Weig.X=t(X)%*%Weig%*%X
+  
+  if(det(Xt.Weig.X)<1e-10 || is.na(det(Xt.Weig.X))){
+    X.sca=t(X)%*%(Id-Uno%*%t(Uno)/n)%*%X
+    Xt.Weig.X.inv=n*solve(X.sca)
+  }else{
+    Xt.Weig.X.inv=ne*solve(Xt.Weig.X)
+  }
+  SigmaM=exp(2*parms[1])*Xt.Weig.X.inv
+  return(SigmaM)
+}
+
+##Marginal para prior robusta con aprox de Laplace y SigmaM fixed 
+marg1.allpara.robust.laplace=function(y,rel,ct,X,k.star=NULL,nsim.marg=NULL,nsim.post=NULL,beta0.hat,lsigma.hat,g0.init=0){
+  ncov=ncol(X)
+  data1.aux=as.matrix(cbind(y,rel,1,X))
+  n=length(y)
+  #Calculamos la matriz SigmaM que es fijada para cada modelo, no varia con beta0 y sigma:
+  SigmaM.hat=calculo.SigmaM(parms=c(lsigma.hat,beta0.hat),cens=ct,X)
+  
+  colnames(data1.aux)=c("y","rel","Intercp",colnames(X))
+  tt=survreg(Surv(exp(y),rel)~data1.aux[,-c(1:3)],dist="lognormal")
+  parms.hat1=c(log(tt$scale),tt$coeff)
+  
+  #El optim directamente no funciona, vamos a simular y quedarnos con las esperanzas:
+  tt1=optim(par=parms.hat1,fn=log.post.lnormal.robust.sigmaMfixed.g.inte,Data=data1.aux,
+            SigmaM=SigmaM.hat,cens=ct,k.star=k.star,hessian=TRUE,method="Nelder-Mead",control=list(fnscale=-1))
+  hessi=-tt1$hessian
+  
+  sd.par=sqrt(diag(solve(hessi)))
+  # par.inf=tt1$par-3*sd.par
+  # # Constraint on log(g)>log((1+n)/(n*(ncov))-1/n)
+  # par.inf[length(par.inf)]=max(par.inf[length(par.inf)],log((1+n)/(n*(ncov))-1/n))
+  # par.sup=tt1$par+3*sd.par
+  # 
+  # tt1=optim(par=tt1$par,fn=log.post.lnormal.robust.sigmaMfixed.g.inte,Data=data1.aux,SigmaM=SigmaM.hat,cens=ct,hessian=TRUE,
+  #           control=list(fnscale=-1),method = "L-BFGS-B",lower=par.inf,upper=par.sup)
+  # hessi=-tt1$hessian
+  
+  map.coef=as.vector(tt1$par)
+  p=dim(hessi)[1]
+  lm1.lapl=log.post.lnormal.robust.sigmaMfixed.g.inte(parms=map.coef,Data=data1.aux,cens=ct,SigmaM=SigmaM.hat,k.star=k.star)+p/2*log(2*pi)-0.5*log(det(hessi))
+  ##Hay que hacer la exp?
+  return(list(marg=lm1.lapl,par.post=NULL))
+}
+
+
+##Marginal con aprox de Laplace SigmaM fixed y 
+marg1.allpara.igamma.laplace=function(y,rel,ct,X,k.star=NULL,nsim.marg=NULL,nsim.post=NULL,beta0.hat,lsigma.hat){
+  ncov=ncol(X)
+  data1.aux=as.matrix(cbind(y,rel,1,X))
+  n=length(y)
+  #Calculamos la matriz SigmaM que es fijada para cada modelo, no varia con beta0 y sigma:
+  SigmaM.hat=calculo.SigmaM(parms=c(lsigma.hat,beta0.hat),cens=ct,X)
+  
+  colnames(data1.aux)=c("y","rel","Intercp",colnames(X))
+  tt=survreg(Surv(exp(y),rel)~data1.aux[,-c(1:3)],dist="lognormal")
+  parms.hat1=c(log(tt$scale),tt$coeff)
+  
+  #Inicializamos con g=1
+  tt1=optim(par=c(parms.hat1,1),fn=log.post.lnormal.igamma.sigmaMfixed.vec,control=list(fnscale=-1),Data=data1.aux,SigmaM=SigmaM.hat,cens=ct,hessian=TRUE)
+  
+  hessi=-tt1$hessian
+  
+  map.coef=as.vector(tt1$par)
+  p=dim(hessi)[1]
+ 
+  lm1.lapl=log.post.lnormal.igamma.sigmaMfixed(parms=map.coef[-p],g=map.coef[p],Data=data1.aux,cens=ct,SigmaM=SigmaM.hat)+p/2*log(2*pi)+log(det(hessi)^(-0.5))
+  ##Hay que hacer la exp?
+  return(list(marg=lm1.lapl,par.post=NULL))
+}
+
+
+##Marginal con aprox de Laplace y SIN FIJAR SIGMAM
+marg1.allpara.igamma.laplace2=function(y,rel,ct,X,k.star=NULL,nsim.marg=NULL,nsim.post=NULL,beta0.hat,lsigma.hat){
+  ncov=ncol(X)
+  data1.aux=as.matrix(cbind(y,rel,1,X))
+  n=length(y)
+  
+  colnames(data1.aux)=c("y","rel","Intercp",colnames(X))
+  tt=survreg(Surv(exp(y),rel)~data1.aux[,-c(1:3)],dist="lognormal")
+  parms.hat1=c(log(tt$scale),tt$coeff)
+  
+  #Inicializamos con g=1
+  tt1=optim(par=c(parms.hat1,1),fn=log.post.lnormal.our.vec,control=list(fnscale=-1),Data=data1.aux,cens=ct,hessian=TRUE)
+  
+  hessi=-tt1$hessian
+  
+  map.coef=as.vector(tt1$par)
+  p=dim(hessi)[1]
+  
+  lm1.lapl=log.post.lnormal.our(parms=map.coef[-p],g=map.coef[p],Data=data1.aux,cens=ct)+p/2*log(2*pi)+log(det(hessi)^(-0.5))
+  ##Hay que hacer la exp?
+  return(list(marg=lm1.lapl,par.post=NULL))
+}
+
+##Marginal con aprox de Laplace SigmaM fixed y usando g fijo, g=1
+marg1.allpara.gfixed.laplace=function(y,rel,ct,X,k.star=NULL,nsim.marg=NULL,nsim.post=NULL,beta0.hat,lsigma.hat){
+  ncov=ncol(X)
+  data1.aux=as.matrix(cbind(y,rel,1,X))
+  n=length(y)
+  #Calculamos la matriz SigmaM que es fijada para cada modelo, no varia con beta0 y sigma:
+  SigmaM.hat=calculo.SigmaM(parms=c(lsigma.hat,beta0.hat),cens=ct,X)
+  
+  colnames(data1.aux)=c("y","rel","Intercp",colnames(X))
+  tt=survreg(Surv(exp(y),rel)~data1.aux[,-c(1:3)],dist="lognormal")
+  parms.hat1=c(log(tt$scale),tt$coeff)
+  
+  #Inicializamos con g=1
+  tt1=optim(par=parms.hat1,fn=log.post.lnormal.gfixed.sigmaMfixed.vec,control=list(fnscale=-1),Data=data1.aux,SigmaM=SigmaM.hat,cens=ct,hessian=TRUE)
+  
+  hessi=-tt1$hessian
+  
+  map.coef=as.vector(tt1$par)
+  p=dim(hessi)[1]
+  
+  lm1.lapl=log.post.lnormal.gfixed.sigmaMfixed(parms=map.coef,Data=data1.aux,cens=ct,SigmaM=SigmaM.hat)+p/2*log(2*pi)+log(det(hessi)^(-0.5))
+  ##Hay que hacer la exp?
+  return(list(marg=lm1.lapl,par.post=NULL))
+}
