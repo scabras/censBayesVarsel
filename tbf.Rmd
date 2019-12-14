@@ -1,0 +1,82 @@
+--- 
+title: "A Model selection approach for Variable selection with censored data (R code) - test-based Bayes factors (TBF)" 
+author: "María Eugenia Castellanos, Gonzalo García Donato and Stefano Cabras" 
+output: md_document
+bibliography: references-articles.bib
+--- 
+
+  
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(echo = TRUE) 
+```
+
+
+# Intro 
+
+This code implements, the analysis with test-based Bayes factors (TBF) originally proposed by @Jo08 and @HuJo09 later revisited by @Heldetal15, 
+
+This does not implement stochastic model space exploration and all possible models ($2^k$, where $k$ is the number of covariates) are visited. 
+
+# Data 
+
+We consider the heart transplant survival dataset and two spurious uncorrelated variable. This is just one draw for the simulation study described in the paper. 
+
+```{r,message=FALSE} 
+rm(list=ls()) 
+set.seed(17) 
+library(compiler) 
+library(mvtnorm) 
+library(plyr) 
+library(doParallel) 
+source("library-bf-cens-conv-prior.R") 
+source("library-bf-cens-conv-prior-2.R") 
+library(survival) 
+data(heart) 
+jasa=jasa[jasa$transplant==1,] 
+surv.time=jasa$fu.date-jasa$accept.dt
+fecha.fin=as.Date(0, origin = "1974-04-01") 
+cens.time=fecha.fin-jasa$accept.dt  
+cens.time[jasa$fustat==0]=surv.time[jasa$fustat==0] 
+dat.heart=data.frame(as.numeric(surv.time),as.numeric(jasa$fustat),as.numeric(cens.time),jasa$age,rnorm(nrow(jasa)),rnorm(nrow(jasa))) 
+colnames(dat.heart)=c("survival","rel","cens","age","spur1","spur2") 
+dat.heart=dat.heart[dat.heart$survival>0,] 
+summary(dat.heart)
+``` 
+
+# Analysis 
+
+## Posterior inclusion probabilities based on TBF
+
+The full matrix is 
+
+```{r} 
+var.name=c("age","spur1","spur2") 
+k=length(var.name)
+n=nrow(dat.heart)
+Xfull=dat.heart[,var.name]
+Xfull=scale(Xfull)
+colnames(Xfull)=var.name 
+Xfull=as.data.frame(Xfull) 
+mod.list=index.models(ncol(Xfull)) 
+nmodels=length(mod.list) 
+``` 
+
+
+These are the examined models: 
+
+```{r} 
+llply(mod.list,function(x) colnames(Xfull)[x]) 
+```
+
+These are the inclusion probabilities according to different versions of the TBF:
+
+```{r}
+source("TBFfunctions.R")
+ipTBF(Xfull, y=dat.heart$survival, delta=dat.heart$rel, g.param="EB")
+ipTBF(Xfull, y=dat.heart$survival, delta=dat.heart$rel, g.param="g=nu")
+ipTBF(Xfull, y=dat.heart$survival, delta=dat.heart$rel, g.param="g=n")
+ZSadapt.ipTBF(Xfull, y=dat.heart$survival, delta=dat.heart$rel)	
+```
+
+# References

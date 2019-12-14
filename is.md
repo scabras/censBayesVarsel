@@ -1,12 +1,8 @@
 Intro
 =====
 
-This code implements, for each entertained model
-*Σ*<sub>*γ*</sub><sup>*M*</sup>(*β̂*<sub>0</sub>, *σ̂*) as the prior
-covariance matrix, where the point estimators are the posterior means of
-the corresponding parameters under the null model.
-
-All marginals are approximated with Laplace.
+This code implements, the importance sampling approach to obtain
+marginals and hence Bayes Factors.
 
 This does not implement stochastic model space exploration and all
 possible models (2<sup>*k*</sup>, where *k* is the number of covariates)
@@ -64,20 +60,26 @@ Data for the null model are
 
     data0=as.matrix(cbind(log(dat.heart$survival),dat.heart$rel,1))
 
-Laplace approximation for the marginal of the null model and calcualtion
-of *Σ*<sub>*γ*</sub><sup>*M*</sup>(*β̂*<sub>0</sub>, *σ̂*):
+IS approximation for the marginal
 
-    tt0=optim(par=c(0,0),fn=log.post.lnormal,control=list(fnscale=-1),Data=data0,method=optimmethod,hessian=TRUE) 
-    var.prop=-solve(tt0$hessian) 
-    parms.hat0=tt0$par 
-    beta0.hat=parms.hat0[2] 
-    lsigma.hat=parms.hat0[1] 
-    hessi0=-tt0$hessian 
-    map.coef=as.vector(tt0$par) 
-    p=dim(hessi0)[1] 
-    (lm0=log.post.lnormal(parms=map.coef,Data=data0)+p/2*log(2*pi)-0.5*log(det(hessi0))) 
+    tt0=optim(par=c(0,0),fn=log.post.lnormal,control=list(fnscale=-1),Data=data0,method=optimmethod,hessian=TRUE)
+    var.prop=-solve(tt0$hessian)
 
-    ## [1] -71.09188
+    nsimul=10000
+    parms.hat0=tt0$par
+    res=post(log.post.lnormal,nsimul=nsimul,parms.init=parms.hat0,dat=data0)
+    res$par=res$par[-(1:(nsimul*0.3)),]
+    mu.prop=apply(res$par,2,mean)
+    Sigma.prop=cov(res$par)
+    nsim=40000
+    thetas=rmvt(nsim, delta = mu.prop, sigma = Sigma.prop,df=3)
+
+    lnum=apply(thetas,1,log.post.lnormal.0.our,Data=data0)
+    lden=apply(thetas,1,dmvt,delta=mu.prop, sigma =Sigma.prop,df=3,log=TRUE)
+
+    (lm0=log(mean(exp(lnum-lden))))
+
+    ## [1] -71.06686
 
 Rest of the models
 ------------------
@@ -126,18 +128,20 @@ These are the examined models:
     ## [1] "age"   "spur1" "spur2"
 
 We have 7 models more than the null, whose marginals are approximated
-with Laplace with this code.
+with IS with *g* is integrated over the robust prior (uncomment ) or
+inverse Gamma (uncomment ) or fixed (uncomment ) with this code.
 
     lm1 <- foreach(i=1:nmodels, .combine=c) %dopar% { 
         source("library-bf-cens-conv-prior.R") 
-        source("library-bf-cens-conv-prior-2.R") 
-        marg1.allpara.gfixed.laplace(y=log(dat.heart$survival), 
-                                    rel=dat.heart$rel,ct=log(dat.heart$cens), 
-                                    X=as.matrix(Xfull[mod.list[[i]]]), 
-                                    k.star=0,nsim.marg = NULL, 
-                                    nsim.post = NULL,beta0.hat,lsigma.hat)$marg 
+        source("library-bf-cens-conv-prior-2.R")
+        library(mvtnorm)
+        #robust# marg1.allpara.robust(y=log(dat.heart$survival),rel=dat.heart$rel,ct=log(dat.heart$cens),X=Xfull[mod.list[[i]]],k.star=0,nsim.marg = 10000,nsim.post = 5000)$marg
+     #ig#
+      marg1.allpara.igamma(y=log(dat.heart$survival),rel=dat.heart$rel,cens=log(dat.heart$cens),X=Xfull[mod.list[[i]]],k.star=0,nsim.marg = 10000,nsim.post = 5000)$marg 
+      #gfixed#  marg1.allpara.gfixed(y=log(dat.heart$survival),rel=dat.heart$rel,cens=log(dat.heart$cens),X=Xfull[mod.list[[i]]],k.star=0,nsim.marg = 10000,nsim.post = 5000)$marg
     }
     stopCluster(cl)
+    lm1=log(lm1)
 
 BF, model posterior probabilities and posterior inclusion probabilities
 =======================================================================
@@ -168,14 +172,14 @@ A matrix with the summary:
     results 
 
     ##            age spur1 spur2      marg         BF  PriorProb PosteriorProb
-    ## Model  1     1     0     0 -71.22097 0.87889172 0.08333333   0.192921014
-    ## Model  2     0     1     0 -72.87960 0.16734088 0.08333333   0.036732137
-    ## Model  3     0     0     1 -73.06978 0.13835899 0.08333333   0.030370473
-    ## Model  4     1     1     0 -73.03313 0.14352391 0.08333333   0.031504198
-    ## Model  5     1     0     1 -73.08049 0.13688528 0.08333333   0.030046986
-    ## Model  6     0     1     1 -74.85308 0.02325588 0.08333333   0.005104779
-    ## Model  7     1     1     1 -74.88685 0.02248363 0.25000000   0.014805801
-    ## Null Model   0     0     0 -71.09188 1.00000000 0.25000000   0.658514612
+    ## Model  1     1     0     0 -71.45198 0.68037435 0.08333333    0.15814293
+    ## Model  2     0     1     0 -73.10694 0.13001932 0.08333333    0.03022106
+    ## Model  3     0     0     1 -73.28758 0.10853115 0.08333333    0.02522646
+    ## Model  4     1     1     0 -73.06747 0.13525362 0.08333333    0.03143770
+    ## Model  5     1     0     1 -73.12746 0.12737802 0.08333333    0.02960713
+    ## Model  6     0     1     1 -74.86450 0.02242376 0.08333333    0.00521207
+    ## Model  7     1     1     1 -74.48526 0.03276486 0.25000000    0.02284712
+    ## Null Model   0     0     0 -71.06686 1.00000000 0.25000000    0.69730553
 
 High posterior model
 --------------------
@@ -191,7 +195,7 @@ Posterior inclusion probabilities and median probability model
     (pip=colSums(t(t(results[,1:ncol(Xfull)]*results[,"PosteriorProb"])))) 
 
     ##        age      spur1      spur2 
-    ## 0.26927800 0.08814692 0.08032804
+    ## 0.24203488 0.08971795 0.08289278
 
     mpm=(pip>0.5)*1 
     mpm=apply(results[,1:k],1,function(x) all(x==mpm)) 

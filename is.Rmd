@@ -1,5 +1,5 @@
 --- 
-title: "A Model selection approach for Variable selection with censored data (R code) - Laplace" 
+title: "A Model selection approach for Variable selection with censored data (R code) - Importance Sampling" 
 author: "María Eugenia Castellanos, Gonzalo García Donato and Stefano Cabras" 
 output: md_document 
 --- 
@@ -13,9 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Intro 
 
-This code implements, for each entertained model $\Sigma^M_\gamma(\hat\beta_0,\hat\sigma)$ as the prior covariance matrix, where the point estimators are the posterior means of the corresponding parameters under the null model.
-
-All marginals are approximated with Laplace.
+This code implements, the importance sampling approach to obtain marginals and hence Bayes Factors. 
 
 This does not implement stochastic model space exploration and all possible models ($2^k$, where $k$ is the number of covariates) are visited. 
 
@@ -53,18 +51,25 @@ Data for the null model are
 data0=as.matrix(cbind(log(dat.heart$survival),dat.heart$rel,1))
 ``` 
 
-Laplace approximation for the marginal of the null model and calcualtion of $\Sigma^M_\gamma(\hat\beta_0,\hat\sigma)$: 
+IS approximation for the marginal
 
-```{r} 
-tt0=optim(par=c(0,0),fn=log.post.lnormal,control=list(fnscale=-1),Data=data0,method=optimmethod,hessian=TRUE) 
-var.prop=-solve(tt0$hessian) 
-parms.hat0=tt0$par 
-beta0.hat=parms.hat0[2] 
-lsigma.hat=parms.hat0[1] 
-hessi0=-tt0$hessian 
-map.coef=as.vector(tt0$par) 
-p=dim(hessi0)[1] 
-(lm0=log.post.lnormal(parms=map.coef,Data=data0)+p/2*log(2*pi)-0.5*log(det(hessi0))) 
+```{r}
+tt0=optim(par=c(0,0),fn=log.post.lnormal,control=list(fnscale=-1),Data=data0,method=optimmethod,hessian=TRUE)
+var.prop=-solve(tt0$hessian)
+
+nsimul=10000
+parms.hat0=tt0$par
+res=post(log.post.lnormal,nsimul=nsimul,parms.init=parms.hat0,dat=data0)
+res$par=res$par[-(1:(nsimul*0.3)),]
+mu.prop=apply(res$par,2,mean)
+Sigma.prop=cov(res$par)
+nsim=40000
+thetas=rmvt(nsim, delta = mu.prop, sigma = Sigma.prop,df=3)
+
+lnum=apply(thetas,1,log.post.lnormal.0.our,Data=data0)
+lden=apply(thetas,1,dmvt,delta=mu.prop, sigma =Sigma.prop,df=3,log=TRUE)
+
+(lm0=log(mean(exp(lnum-lden))))
 ``` 
 
 ## Rest of the models 
@@ -84,7 +89,7 @@ nmodels=length(mod.list)
 ``` 
 
 Parallel calculation: 
-```{r} 
+```{r}
 cl <- makePSOCKcluster(4) 
 registerDoParallel(cl) 
 ```
@@ -95,19 +100,20 @@ These are the examined models:
 llply(mod.list,function(x) colnames(Xfull)[x]) 
 ```
 
-We have `r nmodels` models more than the null, whose marginals are approximated with Laplace with this code.
+We have `r nmodels` models more than the null, whose marginals are approximated with IS with $g$ is integrated over the robust prior (uncomment `r #robust#`) or inverse Gamma (uncomment `r #ig#`) or fixed (uncomment `r #gfixed#`) with this code.
 
-```{r} 
+```{r,cache=TRUE} 
 lm1 <- foreach(i=1:nmodels, .combine=c) %dopar% { 
     source("library-bf-cens-conv-prior.R") 
-    source("library-bf-cens-conv-prior-2.R") 
-    marg1.allpara.gfixed.laplace(y=log(dat.heart$survival), 
-                                rel=dat.heart$rel,ct=log(dat.heart$cens), 
-                                X=as.matrix(Xfull[mod.list[[i]]]), 
-                                k.star=0,nsim.marg = NULL, 
-                                nsim.post = NULL,beta0.hat,lsigma.hat)$marg 
+    source("library-bf-cens-conv-prior-2.R")
+    library(mvtnorm)
+    #robust# marg1.allpara.robust(y=log(dat.heart$survival),rel=dat.heart$rel,ct=log(dat.heart$cens),X=Xfull[mod.list[[i]]],k.star=0,nsim.marg = 10000,nsim.post = 5000)$marg
+ #ig#
+  marg1.allpara.igamma(y=log(dat.heart$survival),rel=dat.heart$rel,cens=log(dat.heart$cens),X=Xfull[mod.list[[i]]],k.star=0,nsim.marg = 10000,nsim.post = 5000)$marg 
+  #gfixed#  marg1.allpara.gfixed(y=log(dat.heart$survival),rel=dat.heart$rel,cens=log(dat.heart$cens),X=Xfull[mod.list[[i]]],k.star=0,nsim.marg = 10000,nsim.post = 5000)$marg
 }
 stopCluster(cl)
+lm1=log(lm1)
 ``` 
 
 # BF, model posterior probabilities and posterior inclusion probabilities 
