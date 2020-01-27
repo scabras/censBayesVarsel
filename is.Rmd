@@ -13,13 +13,13 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Intro 
 
-This code implements, the importance sampling approach to obtain marginals and hence Bayes Factors. 
+This code implements the importance sampling approach to obtain marginals and hence Bayes Factors. 
 
 This does not implement stochastic model space exploration and all possible models ($2^k$, where $k$ is the number of covariates) are visited. 
 
 # Data 
 
-We consider the heart transplant survival dataset and two spurious uncorrelated variable. This is just one draw for the simulation study described in the paper. 
+We consider the heart transplant survival dataset and two spurious uncorrelated variables. This is just one draw for the simulation study described in the paper. 
 
 ```{r,message=FALSE} 
 rm(list=ls()) 
@@ -74,7 +74,7 @@ lden=apply(thetas,1,dmvt,delta=mu.prop, sigma =Sigma.prop,df=3,log=TRUE)
 
 ## Rest of the models 
 
-The rest of the models is defined upon the full matrix. All models will be examined (no random search). 
+The rest of models is defined upon the full matrix. All models will be examined (no random search). 
 
 ```{r} 
 var.name=c("age","spur1","spur2") 

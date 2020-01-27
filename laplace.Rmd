@@ -13,7 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Intro 
 
-This code implements, for each entertained model $\Sigma^M_\gamma(\hat\beta_0,\hat\sigma)$ as the prior covariance matrix, where the point estimators are the posterior means of the corresponding parameters under the null model.
+This code implements, for each entertained model, $\Sigma^M_\gamma(\hat\beta_0,\hat\sigma)$ as the prior covariance matrix, where the point estimators are the posterior means of the corresponding parameters under the null model.
 
 All marginals are approximated with Laplace.
 
