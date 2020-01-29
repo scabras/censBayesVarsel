@@ -85,7 +85,6 @@ log.post.ggamma=cmpfun(log.post.ggamma.nc)
 post=function(log.post,nsimul,parms.init,b,dat,nunc,XtX.inv){
   fit=optim(parms.init,log.post,b=b,Data=dat,XtX.inv=XtX.inv,nunc=nunc,control=list(fnscale=-1),method=optimmethod,hessian=TRUE)
   var.prop=-solve(fit$hessian)
-  #if(fit$convergence==0){proposal=list(var=var.prop,scale=2)}else{proposal=list(var=var.prop,scale=2) }
   proposal=list(var=var.prop,scale=2)
   bayesfit=rwmetrop(log.post,proposal,fit$par,nsimul,b=b,Data=dat,XtX.inv=XtX.inv,nunc=nunc)
   stuff=list(var.prop=(proposal$scale^2)*proposal$var,par=bayesfit$par)
@@ -126,7 +125,6 @@ log.marg.laplace.nc=function (log.post, parms.hat, dat, b,XtX.inv,nunc){
 }
 
 log.marg.laplace=log.marg.laplace.nc
-#log.marg.laplace=log.marg.laplace.bp
 
 nunc.func.nu=function(x) sum(x)
 nunc.func.n=function(x)  length(x)
@@ -135,14 +133,12 @@ nunc.func.uno=function(x)  1
 func.XtX.inv.n=function(rel,XM,y=NULL,model=NULL) solve(t(XM)%*%XM)
 func.XtX.inv.nu=function(rel,XM,y=NULL,model=NULL) solve(t(XM[rel==1,])%*%XM[rel==1,])
 
-#Funcion anterior que usabamos para definir la matriz de var-covar a partir de la muestra observada:
 func.XtX.obsfisher.old=function(rel,XM,y=NULL){
   tt=survreg(Surv(exp(y),rel)~ XM,dist="lognormal")
   SIG=tt$var[-c(1,nrow(tt$var)),-c(1,nrow(tt$var))]/tt$scale^2
   return(SIG)
 } 
 
-#Funcion actual para definir la matriz de var-covar a partir de la muestra observada:
 func.XtX.obsfisher=function(rel,XM,y=NULL){
   tt=survreg(Surv(exp(y),rel)~ XM,dist="lognormal")
   ic=rel==0
@@ -154,14 +150,12 @@ func.XtX.obsfisher=function(rel,XM,y=NULL){
   ww=1/ww*(exp(-resid^2)/ww-resid*exp(-resid^2/2))*ic
   XMw.c=sqrt(ww)*XM
   XtX.cw=t(XMw.c)%*%XMw.c
-  #Sumamos la info unitaria proporcionada por uncensored and censored data:
   I.F=XtX.uw/sum(iu)+XtX.cw/sum(ic)
   SIG=solve(I.F)
   return(SIG)
 }
 
 
-#logbf=log.bf.parziale(data0,data1,nsimul,parms.init.used=list(tt1,pars),b=c(1,1),log.post=log.post,use.MCMC=use.MCMC)
 
 ############# Log of BF 1 against 0 based on data0 and data1
 log.bf.parziale=function(data0,data1,nsimul,parms.init.used,b,log.post,use.MCMC=NULL){
@@ -243,7 +237,6 @@ sim.dati=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"){
 
 #sim.dati.detcens(n,beta.true,p.cens,sigma=sigma.true,mu=mu.true,model=model)
 ############# Data Simulation according to the model specified
-#La censura usando esta funcion se realiza para los valores de la primera covariable x, con valores más pequeños
 sim.dati.detcens=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"){
   parms.true = c(log(sigma), mu, beta.true)
   p = length(beta.true)
@@ -253,13 +246,10 @@ sim.dati.detcens=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"){
   if(p==1) x[,2]=x[,2]-mean(x[,2]) else x[,-1]=apply(x[,-1],2,function(xx) xx-mean(xx))
   mu1=x%*%parms.true[-1]
   
-  #Ordenamos las covariables simuladas de acuerdo a la media del predictor lineal
   ind.ord=sort(mu1,index.return=TRUE)$ix
   mu1=mu1[ind.ord]
   x=x[ind.ord,]
   
-  ##Vamos a censurar de forma que para los valores más pequeños y más grande del predictor lineal la probabilidad de censura sea muy alta, mientras que para los valores intermedios esta probabilidad sea más baja. 
-  #Es decir, en las posiciones 1:(ncens/2) y floor((n-ncens/2+1)):n la probabilidad de censura es muy alta, 0.95, mientras que en las otras posiciones es muy baja: 0.05
   ncens = round(n*p.cens,0)
   id.cens=c(1:(ncens/2),floor((n-ncens/2+1)):n)
 
@@ -291,18 +281,14 @@ sim.dati.detcens=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"){
    if(model=="lnorm") censtimes = rnorm(n,mu2,sigma)
    if(model=="ggamma") censtimes = mu2+rmodel(n,0,1)
    ids = censtimes<y
-   #Finalmente las observaciones censuradas serán las que salen en ids:
    relapse[ids] = 0
    y[ids] = censtimes[ids]
-   #Vamos a no censurar también el valor de máximo predictor lineal, están ordenados por mu1;
-   #relapse[n]=1
-   dat=cbind(y,relapse,x)
+    dat=cbind(y,relapse,x)
    parms.init = list(init0=parms.true[c(1,2)], init1=parms.true)
    return(list(dat=dat,parms.init=parms.init,censtimes=censtimes))
 }
 
 ############# Data Simulation according to the model specified
-#La censura usando esta funcion se realiza para los valores de las covariables mas alejados segun Mahalanobis distance:
 sim.dati.detcens.mahala=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"){
   parms.true = c(log(sigma), mu, beta.true)
   p = length(beta.true)
@@ -312,9 +298,6 @@ sim.dati.detcens.mahala=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"
   if(p==1){ x[,2]=x[,2]-mean(x[,2])} else{x[,-1]=apply(x[,-1],2,function(xx) xx-mean(xx))}
   
   
-  #Despues de centrar las x (sin contar la intercepta), el vector de medias es 0
-  
-  #Ordenamos las covariables simuladas de acuerdo a la distancia de mahalanobis 
   if(sum(beta.true)>0){
     covari=as.matrix(x[,-1])
     var.x=var(covari[,which(beta.true!=0)])
@@ -325,20 +308,14 @@ sim.dati.detcens.mahala=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"
   mu1=mu1[ind.ord]
   x=x[ind.ord,]
   
-  #Dado que hemos ordenado por distancia de mahalanobis, ahora vamos a censurar los ncens mas alejados segun esta distancia:
   ncens = round(n*p.cens,0)
   id.cens=(n-ncens+1):n
   
-  #p.cens2=0.99
-  #p.cens3=0.01
-  #mu2=rep(NA,length(mu1))
   if(model=="lnorm"){
     rmodel=rnorm
     mu2 = mu1-sqrt(2*sigma^2)*qnorm(p.cens,0,1)
     
-    #mu2[id.cens]=mu1[id.cens]-sqrt(2*sigma^2)*qnorm(p.cens2,0,1)
-    #mu2[-id.cens] = mu1[-id.cens]-sqrt(2*sigma^2)*qnorm(p.cens3,0,1)
-  }
+   }
   if(model=="weibull"){
     rmodel=rgumbel
     
@@ -360,18 +337,14 @@ sim.dati.detcens.mahala=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"
   if(model=="ggamma") censtimes = mu2+rmodel(n,0,1)
   #ids = censtimes<y
   ids=id.cens
-  #Finalmente las observaciones censuradas serán las que salen en ids:
   relapse[ids] = 0
   y[ids] = censtimes[ids]
-  #Vamos a no censurar también el valor de máximo predictor lineal, están ordenados por mu1;
-  #relapse[n]=1
   dat=cbind(y,relapse,x)
   parms.init = list(init0=parms.true[c(1,2)], init1=parms.true)
   return(list(dat=dat,parms.init=parms.init,censtimes=censtimes))
 }
 
 ############# Data Simulation according to the model specified
-#En esta función vamos a simular datos de acuerdo al modelo especificado, y vamos a simular tiempos de censura, para que en media el número de censurados sea pcens*n
 sim.dati.known.cens=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"){
   parms.true = c(log(sigma), mu, beta.true)
   p = length(beta.true)
@@ -402,8 +375,7 @@ sim.dati.known.cens=function(n,beta.true,p.cens = 0.3,sigma,mu,model="lnorm"){
   relapse = ones
   ids = rep(FALSE,n)
   
-  #Simulamos los censtimes de forma que P(Y>Censtimes)=pcens 
-  if(model=="weibull") censtimes = log(rweibull(n, shape=alpha, scale=(1/rate.weib)^(1/alpha)))
+   if(model=="weibull") censtimes = log(rweibull(n, shape=alpha, scale=(1/rate.weib)^(1/alpha)))
   if(model=="lnorm") censtimes = rnorm(n,mu2,sigma)
   if(model=="ggamma") censtimes = mu2+rmodel(n,0,1)
   ids = censtimes<y
@@ -444,27 +416,20 @@ prob.b=function(n,ncens,p,use,toplot=FALSE){
   if(toplot) barplot(height=nstar.dens,names.arg=nstar.possible,xlab="nt",ylab="de",main="")
   if(use=="all"){
     b.frac=cbind(p/(n-ncens),(nstar.possible-p)/ncens)
-#    b.frac=cbind(p/n,(nstar.possible-p)/n)
-#    b.frac=cbind(nstar.possible/n,nstar.possible/n)
     b.frac.prob=nstar.dens}
   if(use=="mode"){
     nstar.mode=nstar.possible[nstar.dens==max(nstar.dens)][1]
     b.frac.prob=1
     b.frac=cbind(p/(n-ncens),(nstar.mode-p)/ncens)}
-  #    b.frac=cbind(nstar.mode/n,nstar.mode/n)}
-  #    b.frac=cbind(p/n,(nstar.mode-p)/n)}
 if(use=="median"){
     nstar.median=min(nstar.possible[cumsum(nstar.dens)>=0.5])[1]
     b.frac.prob=1
     b.frac=cbind(p/(n-ncens),(nstar.median-p)/ncens)}
-  #    b.frac=cbind(nstar.median/n,nstar.median/n)}
-  #    b.frac=cbind(p/n,(nstar.median-p)/n)}
   return(list(B=b.frac,B.prob=b.frac.prob))
 }
 
 
 ############# Return the indices for a Training sample
-#Cuando usamos Conventional Priors, estamos considerando una prior propia para los betas diferentes a la intercepta, asi que the minimal training sample debe tener tamanyo 2! (para mu y sigma).
 training.sample.conv.prior=function(dati,num.par=2){
   n=nrow(dati)
   cens=dati[,2]
@@ -527,9 +492,6 @@ fbf.ind.betalnorm=function(data0,data1,Bs,Bmode,use.pericchi2005.fbf=FALSE,
     qj=0
     qi=0
     r=b*nrow(data0)
-    #    lbfb=(log(b)*0.5*(qj-qi)+lgamma(0.5*(n-kj+qj))+
-    #            lgamma(0.5*(r-ki+qi))-lgamma(0.5*(n-ki+qi))-
-    #            lgamma(0.5*(r-kj+qj))+(n-r)*0.5*(log(Ri)-log(Rj)))
     lbfb=(lgamma(0.5*(r-ki))+
             lgamma(0.5*(n-kj))-lgamma(0.5*(r-kj))-
             lgamma(0.5*(n-ki))+(n-r)*0.5*(log(Ri)-log(Rj)))
@@ -752,18 +714,12 @@ analyse.data=function(datos,calc.cpbf=TRUE,calc.bic=TRUE,calc.fbf=TRUE,calc.fbfm
   if(use.true.sim){tt1=c(0,0)}else{
     tt1=optim(par=c(0,0),fn=log.post,control=list(fnscale=-1),Data=data0,b=c(1,1),method=optimmethod)$par
   }
-  ##En esta función tmpmyf calculamos los BFs usando la Conventional Prior, via log.fb.parziale, porque b=c(1,1) ya no es parcial.
   tmpmyf=function(ii){
     data1=as.matrix(cbind(datos[1:2],model.matrix(~.,data=datos[ind.betas[[ii]]+2])))
     if(use.true.sim){pars=c(tt1,unlist(beta.trues[ii])[ind.betas[[ii]]])
                      logbf=log.post(parms=pars,Data=data1,b=c(1,1))-log.post(parms=tt1,Data=data0,b=c(1,1))
     }else{
-      #nunc.func=nunc.func.nu;func.XtX.inv=func.XtX.inv.nu
-      #nunc.func=nunc.func.n;func.XtX.inv=func.XtX.inv.n
-      
-      ##### Observation Matrix Fisher (estimated)
-      #nunc.func=nunc.func.uno;func.XtX.inv=func.XtX.obsfisher
-      
+       
       nunc=nunc.func(data1[,2])
       XtX.inv=func.XtX.inv(rel=data1[,2],XM=cbind(data1[,-(1:3)]),y=data1[,1])
       pars=optim(par=c(rep(0,2),unlist(beta.trues[ii])[ind.betas[[ii]]]),fn=log.post,control=list(fnscale=-1),Data=data1,b=c(1,1),nunc=nunc,XtX.inv=XtX.inv,method=optimmethod)$par
@@ -797,7 +753,7 @@ analyse.data=function(datos,calc.cpbf=TRUE,calc.bic=TRUE,calc.fbf=TRUE,calc.fbfm
   }
   Bs=get(useB)
   
-  #BF con Conventional Prior:
+  #BF with Conventional Prior:
   if(calc.cpbf){
     res.cpbf=allbf(ind.betas=ind.betas,dat=datos,Bs=Bs,Bmode=Bmode,parms.init=parms.init,
                    nsimul=nsimul,nprocess=nprocess,log.post=log.post,use.pericchi2005.fbf=NULL,
@@ -868,7 +824,6 @@ analyse.data1cov=function(datos,calc.cpbf=TRUE,calc.bic=TRUE,calc.fbf=TRUE,calc.
   if(use.true.sim){tt1=c(0,0)}else{
     tt1=optim(par=c(0,0),fn=log.post,control=list(fnscale=-1),Data=data0,b=c(1,1),method=optimmethod)$par
   }
-  ##En esta función tmpmyf calculamos los BFs usando la Conventional Prior, via log.fb.parziale, porque b=c(1,1) ya no es parcial.
   tmpmyf=function(ii){
     data1=as.matrix(cbind(datos[1:2],model.matrix(~.,data=datos[ind.betas[[ii]]+2])))
     if(use.true.sim){pars=c(tt1,unlist(beta.trues[ii])[ind.betas[[ii]]])
@@ -884,12 +839,8 @@ analyse.data1cov=function(datos,calc.cpbf=TRUE,calc.bic=TRUE,calc.fbf=TRUE,calc.
   parms.init=c(list(tt1))
   log.bf.all=NULL
   
-#   for(i in 1:length(ind.betas)){
-#     parms.init=c(parms.init,ltt[[i]][1])
-#     log.bf.all=c(log.bf.all,ltt[[i]][2])  
-#   }
-    parms.init=ltt[1]
-    log.bf.all=ltt[2] 
+  parms.init=ltt[1]
+  log.bf.all=ltt[2] 
   
    log.bf.all=unlist(log.bf.all)
   
